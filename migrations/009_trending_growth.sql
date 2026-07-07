@@ -1,0 +1,1 @@
+ALTER TABLE trending_searches ADD COLUMN IF NOT EXISTS growth_pct INTEGER;

@@ -1,0 +1,11 @@
+.env
+*.log
+__pycache__/
+.venv/
+logs/
+proxies*.txt
+google_cookies*.txt
+.python-version
+.idea/
+.playwright-mcp/
+auth.json

@@ -1,0 +1,17 @@
+[project]
+name = "google-trends-parser"
+version = "1.0.0"
+requires-python = ">=3.11"
+dependencies = [
+    "curl-cffi>=0.7.4",
+    "redis>=5.0.4",
+    "asyncpg>=0.30.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.6",
+]
+
+[dependency-groups]
+dev = [
+    "playwright>=1.44.0",
+    "playwright-stealth>=1.0.6",
+]
