@@ -53,6 +53,11 @@ services:
       redis:
         condition: service_started
     restart: unless-stopped
+    networks:
+      default: {}          # доступ к postgres/redis
+      shared:               # discovery ходит сюда по имени 'parser'
+        aliases:
+          - parser
 
   worker:
     build: .
@@ -92,3 +97,9 @@ services:
 volumes:
   redis_data:
   pg_data:
+
+networks:
+  # создаётся один раз на сервере: docker network create shared
+  # к ней же подключается discovery, чтобы ходить к парсеру по имени 'parser'
+  shared:
+    external: true

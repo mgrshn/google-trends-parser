@@ -68,6 +68,19 @@ docker compose -f docker-compose.prod.yml --profile tools run --rm cleanup
 docker compose -f docker-compose.prod.yml up -d
 ```
 
+## Связь с discovery (сеть shared)
+
+Discovery-контейнер достучится до парсера не по `127.0.0.1`, а по docker-сети `shared`.
+Она создаётся один раз на сервере и её же использует discovery:
+
+```bash
+docker network create shared   # если ещё не создана
+```
+
+`api` парсера подключён к `shared` с алиасом `parser`, поэтому в `.env` discovery:
+`PARSER_URL=http://parser:8000` и `PARSER_API_KEY=<API_KEY парсера>`.
+Публичного порта у парсера нет — он внутренний; reverse proxy (Caddy/nginx) ставится только перед discovery.
+
 ## Важно
 
 - **Никакого cron'а опроса трендов на парсере.** Расписание опроса Trending Now живёт в discovery
