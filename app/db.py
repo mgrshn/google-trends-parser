@@ -87,6 +87,44 @@ class Database:
         if self._pool:
             await self._pool.close()
 
+    # ── Proxies ─────────────────────────────────────────────────────────────
+    async def list_proxies(self) -> list[dict]:
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, url, enabled, added_at, last_used_at, success_count, fail_count
+                FROM proxies ORDER BY id
+                """
+            )
+            return [dict(r) for r in rows]
+
+    async def get_proxy(self, proxy_id: int) -> dict | None:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow("SELECT id, url, enabled FROM proxies WHERE id = $1", proxy_id)
+            return dict(row) if row else None
+
+    async def add_proxy(self, url: str) -> dict:
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                INSERT INTO proxies (url) VALUES ($1)
+                ON CONFLICT (url) DO UPDATE SET enabled = true
+                RETURNING id, url, enabled, added_at, last_used_at, success_count, fail_count
+                """,
+                url,
+            )
+            return dict(row)
+
+    async def set_proxy_enabled(self, proxy_id: int, enabled: bool) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute("UPDATE proxies SET enabled = $2 WHERE id = $1", proxy_id, enabled)
+            return result.endswith("1")
+
+    async def delete_proxy(self, proxy_id: int) -> bool:
+        async with self._pool.acquire() as conn:
+            result = await conn.execute("DELETE FROM proxies WHERE id = $1", proxy_id)
+            return result.endswith("1")
+
     async def save_points(self, keyword: str, geo: str, timeframe: str, points: list[dict], category: int = 0, gprop: str = ""):
         """
         points: [{"ts": datetime, "value": int}]

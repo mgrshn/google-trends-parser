@@ -6,6 +6,7 @@ Routes:
     GET /trends        — single keyword, waits up to 60s for fresh data
     GET /trends/batch  — up to 20 keywords × geos, returns immediately
     GET /status        — queue health
+    /proxies           — list/add/patch/delete/check proxies (for discovery admin)
 
 Auth: X-API-Key header. Set API_KEY env var; if unset, auth is disabled (local dev).
 Run: uvicorn app.api:app --reload
@@ -14,9 +15,12 @@ import asyncio
 import contextlib
 import datetime
 import os
+import time
 from datetime import date
 from typing import Any, Literal
+from urllib.parse import urlparse
 
+from curl_cffi.requests import AsyncSession
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Security
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
@@ -24,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from .db import Database
 from .job_queue import Job, JobQueue
+from .scraper import IMPERSONATE
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 DB_DSN = os.getenv("DB_DSN", "postgresql://trends:trends@localhost:5432/trends")
@@ -318,7 +323,66 @@ class HealthResponse(BaseModel):
     redis: str
 
 
+class ProxyOut(BaseModel):
+    id: int
+    host: str = Field(..., description="host:port (без учётных данных)")
+    protocol: str = Field(..., description="http / https / socks5")
+    username: str | None = Field(None, description="Логин (пароль не возвращается)")
+    enabled: bool
+    success_count: int
+    fail_count: int
+    added_at: str | None = None
+    last_used_at: str | None = None
+
+
+class ProxyCreate(BaseModel):
+    url: str = Field(..., example="http://user:pass@host:port", description="Полный URL прокси")
+
+
+class ProxyPatch(BaseModel):
+    enabled: bool = Field(..., description="Включить/выключить прокси")
+
+
+class ProxyCheckResult(BaseModel):
+    ok: bool
+    latency_ms: int | None = None
+    exit_ip: str | None = None
+    error: str | None = None
+
+
 # ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _proxy_public(row: dict) -> dict:
+    """Разбирает url прокси в безопасное представление (без пароля)."""
+    p = urlparse(row["url"])
+    added = row.get("added_at")
+    used = row.get("last_used_at")
+    return {
+        "id": row["id"],
+        "host": f"{p.hostname}:{p.port}" if p.port else (p.hostname or row["url"]),
+        "protocol": p.scheme or "http",
+        "username": p.username,
+        "enabled": row["enabled"],
+        "success_count": row.get("success_count", 0),
+        "fail_count": row.get("fail_count", 0),
+        "added_at": added.isoformat() if added else None,
+        "last_used_at": used.isoformat() if used else None,
+    }
+
+
+async def _check_proxy(url: str, timeout: float = 10.0) -> dict:
+    """Живой тест прокси: тянет внешний IP через него, меряет задержку."""
+    start = time.monotonic()
+    try:
+        async with AsyncSession(impersonate=IMPERSONATE,
+                                proxies={"https": url, "http": url}, timeout=timeout) as s:
+            r = await s.get("https://ifconfig.me/ip")
+            latency = int((time.monotonic() - start) * 1000)
+            if r.status_code == 200:
+                return {"ok": True, "latency_ms": latency, "exit_ip": r.text.strip(), "error": None}
+            return {"ok": False, "latency_ms": latency, "exit_ip": None, "error": f"HTTP {r.status_code}"}
+    except Exception as e:
+        return {"ok": False, "latency_ms": None, "exit_ip": None, "error": str(e)[:200]}
 
 def _resolve_timeframe(period: str, from_date: date | None, to_date: date | None) -> tuple[str, str | None, str | None]:
     if period != "custom":
@@ -691,6 +755,75 @@ async def get_trending(
 async def status():
     """Returns the number of pending jobs and permanently failed jobs."""
     return {"queue": await _queue.size(), "dead": await _queue.dead_size()}
+
+
+@_router.get(
+    "/proxies",
+    response_model=list[ProxyOut],
+    summary="List proxies",
+    tags=["proxies"],
+)
+async def list_proxies():
+    """Текущие прокси-серверы парсера. Пароль в ответе не отдаётся."""
+    rows = await _db.list_proxies()
+    return [_proxy_public(r) for r in rows]
+
+
+@_router.post(
+    "/proxies",
+    response_model=ProxyOut,
+    status_code=201,
+    summary="Add proxy",
+    tags=["proxies"],
+)
+async def add_proxy(body: ProxyCreate):
+    """Добавить прокси по URL. Если такой url уже есть — включает его."""
+    if "://" not in body.url or "@" not in body.url and not urlparse(body.url).hostname:
+        raise HTTPException(400, "url должен быть вида http://user:pass@host:port")
+    row = await _db.add_proxy(body.url)
+    return _proxy_public(row)
+
+
+@_router.patch(
+    "/proxies/{proxy_id}",
+    response_model=ProxyOut,
+    summary="Enable/disable proxy",
+    tags=["proxies"],
+)
+async def patch_proxy(proxy_id: int, body: ProxyPatch):
+    """Включить или выключить прокси. Воркер подхватит изменение по SIGHUP."""
+    if not await _db.set_proxy_enabled(proxy_id, body.enabled):
+        raise HTTPException(404, "Proxy not found")
+    rows = await _db.list_proxies()
+    row = next((r for r in rows if r["id"] == proxy_id), None)
+    return _proxy_public(row)
+
+
+@_router.delete(
+    "/proxies/{proxy_id}",
+    status_code=204,
+    summary="Delete proxy",
+    tags=["proxies"],
+)
+async def delete_proxy(proxy_id: int):
+    """Удалить прокси. Воркер подхватит изменение по SIGHUP."""
+    if not await _db.delete_proxy(proxy_id):
+        raise HTTPException(404, "Proxy not found")
+    return JSONResponse(status_code=204, content=None)
+
+
+@_router.post(
+    "/proxies/{proxy_id}/check",
+    response_model=ProxyCheckResult,
+    summary="Test a proxy",
+    tags=["proxies"],
+)
+async def check_proxy(proxy_id: int):
+    """Живой тест: тянет внешний IP через прокси, возвращает ok/latency/exit_ip/error."""
+    proxy = await _db.get_proxy(proxy_id)
+    if not proxy:
+        raise HTTPException(404, "Proxy not found")
+    return await _check_proxy(proxy["url"])
 
 
 app.include_router(_router)
