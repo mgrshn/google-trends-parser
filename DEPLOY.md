@@ -45,8 +45,16 @@ ufw enable
 
 ## Обновление кода
 
+Одной командой (стянуть код + пересобрать + миграции + health):
+
 ```bash
-cd ~/parser
+cd ~/apps/parser && bash scripts/update.sh
+```
+
+Вручную, если нужно по шагам:
+
+```bash
+cd ~/apps/parser
 git pull
 docker compose -f docker-compose.prod.yml up -d --build
 docker compose -f docker-compose.prod.yml --profile tools run --rm migrate   # если есть новые миграции
