@@ -17,6 +17,14 @@ $COMPOSE --profile tools run --rm migrate
 
 echo "→ проверка health"
 sleep 3
-curl -fsS http://127.0.0.1:8000/health && echo
-
-echo "✓ Готово"
+if curl -fsS http://127.0.0.1:8000/health > /dev/null; then
+  echo ""
+  echo "════════════════════════════════════════════"
+  echo "  ✅  ПАРСЕР ОБНОВЛЁН И РАБОТАЕТ (health: ok)"
+  echo "════════════════════════════════════════════"
+else
+  echo ""
+  echo "⚠️   Код обновлён, но /health не отвечает."
+  echo "     Смотри логи:  docker compose -f docker-compose.prod.yml logs --tail 50 api"
+  exit 1
+fi
